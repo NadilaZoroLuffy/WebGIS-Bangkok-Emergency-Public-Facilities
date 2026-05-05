@@ -1,187 +1,295 @@
-/* ============================================
-   Bangkok Emergency & Public Facilities WebGIS
-   ============================================ */
-
 (function () {
-    'use strict';
+'use strict';
 
-    // ===== Category Configuration =====
-    const CATEGORIES = {
-        emergency: {
-            label: 'Emergency',
-            icon: '🚨',
-            color: '#ff6b6b',
-            subcategories: {
-                fire_hydrant:       { label: 'Fire Hydrant',       icon: '🔴', color: '#e74c3c' },
-                fire_extinguisher:  { label: 'Fire Extinguisher',  icon: '🧯', color: '#e67e22' },
-                defibrillator:      { label: 'Defibrillator',      icon: '💚', color: '#2ecc71' },
-                fire_service_inlet: { label: 'Fire Service Inlet', icon: '🔶', color: '#f39c12' },
-                assembly_point:     { label: 'Assembly Point',     icon: '📍', color: '#9b59b6' },
-                fire_alarm_box:     { label: 'Fire Alarm',         icon: '🔔', color: '#e74c3c' },
-                first_aid:          { label: 'First Aid',          icon: '🩹', color: '#1abc9c' },
-                phone:              { label: 'Emergency Phone',    icon: '📞', color: '#3498db' },
-            }
-        },
-        amenity: {
-            label: 'Amenity',
-            icon: '🏛️',
-            color: '#6c63ff',
-            subcategories: {
-                hospital:          { label: 'Hospital',          icon: '🏥', color: '#e74c3c' },
-                clinic:            { label: 'Clinic',            icon: '⚕️', color: '#e91e63' },
-                police:            { label: 'Police',            icon: '👮', color: '#3f51b5' },
-                library:           { label: 'Library',           icon: '📚', color: '#00bcd4' },
-                place_of_worship:  { label: 'Place of Worship',  icon: '🛕', color: '#ff9800' },
-                toilets:           { label: 'Toilets',           icon: '🚻', color: '#607d8b' },
-                community_centre:  { label: 'Community Centre',  icon: '🏘️', color: '#8bc34a' },
-                school:            { label: 'School',            icon: '🏫', color: '#03a9f4' },
-                bus_station:       { label: 'Bus Station',       icon: '🚌', color: '#ff5722' },
-            }
-        },
-        historic: {
-            label: 'Historic',
-            icon: '🏛️',
-            color: '#ffd93d',
-            subcategories: {
-                wayside_shrine:      { label: 'Wayside Shrine',      icon: '⛩️', color: '#ffd93d' },
-                monument:            { label: 'Monument',             icon: '🗿', color: '#a0522d' },
-                memorial:            { label: 'Memorial',             icon: '🎖️', color: '#cd853f' },
-                archaeological_site: { label: 'Archaeological Site',  icon: '🏺', color: '#daa520' },
-                locomotive:          { label: 'Locomotive',           icon: '🚂', color: '#708090' },
-                cannon:              { label: 'Cannon',               icon: '💣', color: '#556b2f' },
-                tomb:                { label: 'Tomb',                 icon: '⚰️', color: '#696969' },
-                yes:                 { label: 'Historic Site',        icon: '📜', color: '#b8860b' },
-            }
+// ================= CATEGORIES =================
+const CATEGORIES = {
+    emergency: {
+        subcategories: {
+            fire_hydrant:  { label: 'Fire Hydrant',  icon: '🔴', color: '#e74c3c' },
+            defibrillator: { label: 'Defibrillator', icon: '💚', color: '#2ecc71' },
+            first_aid:     { label: 'First Aid',     icon: '🩹', color: '#1abc9c' }
         }
-    };
+    },
+    amenity: {
+        subcategories: {
+            hospital: { label: 'Hospital', icon: '🏥', color: '#e74c3c' },
+            police:   { label: 'Police',   icon: '👮', color: '#3f51b5' },
+            school:   { label: 'School',   icon: '🏫', color: '#03a9f4' }
+        }
+    }
+};
 
-    const BASEMAPS = {
-        dark: L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-            attribution: '&copy; OSM &copy; CARTO',
-            maxZoom: 19
-        }),
-        light: L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
-            attribution: '&copy; OSM &copy; CARTO',
-            maxZoom: 19
-        })
-    };
+// ================= STATE =================
+const activeFilters = new Set();
+Object.values(CATEGORIES).forEach(cat =>
+    Object.keys(cat.subcategories).forEach(k => activeFilters.add(k))
+);
+const allMarkers = [];
 
-    let map;
-    let currentBasemap = 'dark';
-    let allFeatures = [];
-    let layerGroups = {};
-    let layerVisible = {};
+// ================= MAP =================
+let map = L.map('map').setView([13.75, 100.52], 11);
 
-    function initMap() {
-        map = L.map('map', {
-            center: [13.75, 100.52],
-            zoom: 11
+const basemaps = {
+    dark:      L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',    { maxZoom: 19 }),
+    light:     L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',   { maxZoom: 19 }),
+    satellite: L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { maxZoom: 19 }),
+    street:    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',               { maxZoom: 19 })
+};
+basemaps.dark.addTo(map);
+let currentBasemap = 'dark';
+
+const cluster = L.markerClusterGroup({ chunkedLoading: true });
+map.addLayer(cluster);
+
+// ================= CLASSIFY =================
+function classify(props) {
+    if (props.emergency && CATEGORIES.emergency.subcategories[props.emergency])
+        return { key: props.emergency, cls: CATEGORIES.emergency.subcategories[props.emergency] };
+    if (props.amenity && CATEGORIES.amenity.subcategories[props.amenity])
+        return { key: props.amenity, cls: CATEGORIES.amenity.subcategories[props.amenity] };
+    return null;
+}
+
+// ================= ICON =================
+function createIcon(cls) {
+    return L.divIcon({
+        className: '',
+        html: `<div style="background:${cls.color};width:30px;height:30px;border-radius:50%;
+                   display:flex;align-items:center;justify-content:center;font-size:15px;
+                   border:2px solid rgba(255,255,255,0.9);
+                   box-shadow:0 2px 8px rgba(0,0,0,0.45);cursor:pointer;">${cls.icon}</div>`,
+        iconSize: [30, 30],
+        iconAnchor: [15, 15]
+    });
+}
+
+// ================= STATS =================
+function updateStats() {
+    const total   = allMarkers.length;
+    const visible = allMarkers.filter(m => activeFilters.has(m.typeKey)).length;
+    const tEl = document.getElementById('total-features');
+    const vEl = document.getElementById('visible-features');
+    if (tEl) tEl.textContent = total;
+    if (vEl) vEl.textContent = visible;
+}
+
+// ================= FILTER =================
+function applyFilters() {
+    cluster.clearLayers();
+    allMarkers.forEach(({ marker, typeKey }) => {
+        if (activeFilters.has(typeKey)) cluster.addLayer(marker);
+    });
+    updateStats();
+}
+
+// ================= LEGEND =================
+function renderLegend() {
+    const container = document.getElementById('legend-items');
+    if (!container) return;
+    container.innerHTML = '';
+    Object.values(CATEGORIES).forEach(cat => {
+        Object.entries(cat.subcategories).forEach(([key, sub]) => {
+            const div = document.createElement('div');
+            div.className = 'legend-entry legend-clickable';
+            div.setAttribute('data-key', key);
+            div.setAttribute('title', 'Klik untuk show/hide ' + sub.label);
+            div.innerHTML = `
+                <div class="legend-marker" style="background:${sub.color};">${sub.icon}</div>
+                <div class="legend-text">${sub.label}</div>
+                <div class="legend-eye">👁</div>`;
+            div.addEventListener('click', () => toggleFilter(key));
+            container.appendChild(div);
         });
-        BASEMAPS[currentBasemap].addTo(map);
-    }
+    });
+}
 
-    function classifyFeature(props) {
-        if (props.emergency && props.emergency !== 'no' && props.emergency !== 'yes') {
-            const sub = CATEGORIES.emergency.subcategories[props.emergency];
-            if (sub) return { category: 'emergency', subcategory: props.emergency, ...sub };
-        }
-        if (props.amenity) {
-            const sub = CATEGORIES.amenity.subcategories[props.amenity];
-            if (sub) return { category: 'amenity', subcategory: props.amenity, ...sub };
-        }
-        if (props.historic) {
-            const sub = CATEGORIES.historic.subcategories[props.historic];
-            if (sub) return { category: 'historic', subcategory: props.historic, ...sub };
-        }
-        return null;
-    }
+function toggleFilter(key) {
+    activeFilters.has(key) ? activeFilters.delete(key) : activeFilters.add(key);
+    updateLegendState();
+    syncCheckboxes();
+    applyFilters();
+}
 
-    function createIcon(classification) {
-        return L.divIcon({
-            className: 'custom-marker-wrapper',
-            html: `<div class="custom-marker" style="background:${classification.color}; width:24px; height:24px; display:flex; align-items:center; justify-content:center; border-radius:50%; border:2px solid white; box-shadow:0 2px 5px rgba(0,0,0,0.3); font-size:12px;">${classification.icon}</div>`,
-            iconSize: [24, 24],
-            iconAnchor: [12, 12],
-            popupAnchor: [0, -14]
+function updateLegendState() {
+    document.querySelectorAll('.legend-clickable').forEach(div => {
+        const isActive = activeFilters.has(div.getAttribute('data-key'));
+        div.style.opacity          = isActive ? '1' : '0.4';
+        div.style.textDecoration   = isActive ? 'none' : 'line-through';
+        const eye = div.querySelector('.legend-eye');
+        if (eye) eye.textContent   = isActive ? '👁' : '🚫';
+    });
+}
+
+// ================= LAYER CONTROLS =================
+function renderLayerControls() {
+    const container = document.getElementById('layer-controls');
+    if (!container) return;
+    container.innerHTML = '';
+    Object.values(CATEGORIES).forEach(cat => {
+        Object.entries(cat.subcategories).forEach(([key, sub]) => {
+            const item = document.createElement('label');
+            item.className = 'layer-item';
+            item.style.cursor = 'pointer';
+            item.innerHTML = `
+                <span class="layer-checkbox">
+                    <input type="checkbox" checked data-layer-key="${key}">
+                    <span class="checkmark"></span>
+                </span>
+                <span class="layer-color-dot" style="background:${sub.color};color:${sub.color};"></span>
+                <span class="layer-label">${sub.label}</span>
+                <span class="layer-count" id="count-${key}">0</span>`;
+            item.querySelector('input').addEventListener('change', e => {
+                e.target.checked ? activeFilters.add(key) : activeFilters.delete(key);
+                updateLegendState();
+                syncCheckboxes();
+                applyFilters();
+            });
+            container.appendChild(item);
         });
-    }
+    });
+}
 
-    async function loadData() {
-        const loadingOverlay = document.getElementById('loading-overlay');
-        try {
-            // Memanggil file GeoJSON
-            const resp = await fetch('Data_EmergencyPublic_Bangkok.geojson');
-            
-            if (!resp.ok) {
-                throw new Error(`File tidak ditemukan (Status: ${resp.status}). Pastikan nama file di folder Web sudah benar.`);
-            }
+function syncCheckboxes() {
+    document.querySelectorAll('[data-layer-key]').forEach(cb => {
+        cb.checked = activeFilters.has(cb.getAttribute('data-layer-key'));
+    });
+}
 
-            const geojson = await resp.json();
-            allFeatures = geojson.features;
-            
-            if (allFeatures.length === 0) {
-                throw new Error("File GeoJSON terbaca, tapi tidak ada data fitur (features) di dalamnya.");
-            }
+function updateCounts() {
+    const counts = {};
+    allMarkers.forEach(({ typeKey }) => { counts[typeKey] = (counts[typeKey] || 0) + 1; });
+    Object.entries(counts).forEach(([key, n]) => {
+        const el = document.getElementById('count-' + key);
+        if (el) el.textContent = n;
+    });
+}
 
-            processFeatures();
-        } catch (err) {
-            console.error('Detail Error:', err);
-            loadingOverlay.innerHTML = `
-                <div class="loader" style="background: rgba(0,0,0,0.8); padding: 20px; border-radius: 8px; text-align:center;">
-                    <p style="color:#ff6b6b; font-weight: bold; font-size:1.2rem;">❌ Error Terjadi</p>
-                    <p style="color:white; margin: 10px 0;">${err.message}</p>
-                    <button onclick="location.reload()" style="padding:8px 16px; cursor:pointer;">Coba Lagi</button>
-                </div>`;
-        }
-    }
+// ================= BASEMAP =================
+function initBasemapControls() {
+    document.querySelectorAll('[data-basemap]').forEach(label => {
+        label.addEventListener('click', () => {
+            const bm = label.getAttribute('data-basemap');
+            if (bm === currentBasemap) return;
+            map.removeLayer(basemaps[currentBasemap]);
+            basemaps[bm].addTo(map);
+            basemaps[bm].bringToBack();
+            currentBasemap = bm;
+            document.querySelectorAll('.basemap-option').forEach(l => l.classList.remove('active'));
+            label.classList.add('active');
+        });
+    });
+}
 
-    function processFeatures() {
-        const subcategoryCounts = {};
+// ================= SIDEBAR TOGGLE =================
+function initSidebarToggle() {
+    const btn     = document.getElementById('sidebar-toggle');
+    const sidebar = document.getElementById('sidebar');
+    if (btn && sidebar) btn.addEventListener('click', () => sidebar.classList.toggle('collapsed'));
+}
 
-        allFeatures.forEach(feature => {
-            const props = feature.properties;
-            const cls = classifyFeature(props);
-            if (!cls) return;
+// ================= LOAD DATA =================
+async function loadData() {
+    const overlay = document.getElementById('loading-overlay');
+    try {
+        const res = await fetch('Data_EmergencyPublic_Bangkok.geojson');
+        if (!res.ok) throw new Error('GeoJSON tidak ditemukan (cek nama file & folder)');
+        const data = await res.json();
+        if (!data.features) throw new Error('Format GeoJSON salah');
 
-            const key = cls.subcategory;
-            if (!subcategoryCounts[key]) {
-                subcategoryCounts[key] = { count: 0, classification: cls };
-            }
-            subcategoryCounts[key].count++;
+        data.features.forEach(f => {
+            if (f.geometry.type !== 'Point') return;
+            const props  = f.properties;
+            const result = classify(props);
+            if (!result) return;
 
-            if (!layerGroups[key]) {
-                layerGroups[key] = L.markerClusterGroup({
-                    maxClusterRadius: 40,
-                    disableClusteringAtZoom: 16
-                });
-                layerVisible[key] = true;
-            }
+            const { key, cls } = result;
+            const [lng, lat]   = f.geometry.coordinates;
 
-            const coords = feature.geometry.coordinates;
-            // Handle Point data
-            if (feature.geometry.type === "Point") {
-                const marker = L.marker([coords[1], coords[0]], { icon: createIcon(cls) });
-                marker.bindPopup(`<strong>${props.name || 'Fasilitas Tanpa Nama'}</strong><br>${cls.label}`);
-                layerGroups[key].addLayer(marker);
-            }
+            const marker = L.marker([lat, lng], { icon: createIcon(cls) });
+
+            // ── Google Maps URL — pin tepat di koordinat marker ──
+            // ?q=lat,lng  meletakkan pin merah di titik tersebut
+            const mapsUrl = `https://www.google.com/maps?q=${lat},${lng}&z=18`;
+
+            const addressHtml = props['addr:street']
+                ? `<div style="font-size:11px;color:#aaa;margin:4px 0 2px;">
+                       📍 ${props['addr:street']}
+                   </div>`
+                : '';
+
+            const websiteBtn = props.website
+                ? `<a href="${props.website}" target="_blank" rel="noopener"
+                      style="flex:1;display:flex;align-items:center;justify-content:center;gap:4px;
+                             background:#333;color:#ccc;padding:8px 10px;border-radius:7px;
+                             font-size:12px;font-weight:600;text-decoration:none;white-space:nowrap;">
+                       🌐 Website
+                   </a>`
+                : '';
+
+            // Popup selalu tampil dulu, lalu user klik tombol Google Maps
+            marker.bindPopup(`
+                <div style="font-family:Inter,sans-serif;min-width:220px;max-width:290px;">
+                    <div style="display:flex;align-items:center;gap:10px;
+                                border-bottom:1px solid rgba(255,255,255,0.08);
+                                padding-bottom:10px;margin-bottom:8px;">
+                        <div style="width:38px;height:38px;border-radius:10px;background:${cls.color};
+                                    display:flex;align-items:center;justify-content:center;
+                                    font-size:20px;flex-shrink:0;">
+                            ${cls.icon}
+                        </div>
+                        <div>
+                            <div style="font-weight:700;font-size:14px;color:#e8eaed;line-height:1.3;">
+                                ${props.name || 'Fasilitas'}
+                            </div>
+                            <div style="font-size:11px;color:#888;text-transform:uppercase;
+                                        letter-spacing:0.5px;margin-top:2px;">
+                                ${cls.label}
+                            </div>
+                        </div>
+                    </div>
+                    ${addressHtml}
+                    <div style="display:flex;gap:7px;margin-top:10px;">
+                        <a href="${mapsUrl}" target="_blank" rel="noopener"
+                           style="flex:1;display:flex;align-items:center;justify-content:center;gap:5px;
+                                  background:${cls.color};color:#fff;padding:8px 10px;border-radius:7px;
+                                  font-size:12px;font-weight:700;text-decoration:none;white-space:nowrap;">
+                            📍 Google Maps
+                        </a>
+                        ${websiteBtn}
+                    </div>
+                </div>
+            `, { maxWidth: 300 });
+
+            allMarkers.push({ marker, typeKey: key });
+            cluster.addLayer(marker);
         });
 
-        Object.keys(layerGroups).forEach(key => map.addLayer(layerGroups[key]));
-
-        // Sembunyikan loading overlay setelah selesai
-        const overlay = document.getElementById('loading-overlay');
+        updateCounts();
+        updateStats();
         if (overlay) overlay.classList.add('hidden');
-    }
 
-    function init() {
-        initMap();
-        loadData();
+    } catch (err) {
+        console.error(err);
+        if (overlay) overlay.innerHTML = `
+            <div style="text-align:center;font-family:Inter,sans-serif;">
+                <h3 style="color:#e74c3c;margin-bottom:12px;">⚠️ ERROR</h3>
+                <p style="margin-bottom:8px;">${err.message}</p>
+                <p style="font-size:13px;color:#888;">
+                    Cek:<br>• Nama file GeoJSON<br>
+                    • Lokasi file (1 folder dengan index.html)<br>
+                    • Jalankan via localhost / live server
+                </p>
+            </div>`;
     }
+}
 
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', init);
-    } else {
-        init();
-    }
+// ================= INIT =================
+document.addEventListener('DOMContentLoaded', () => {
+    renderLegend();
+    renderLayerControls();
+    initBasemapControls();
+    initSidebarToggle();
+    loadData();
+});
 
 })();
